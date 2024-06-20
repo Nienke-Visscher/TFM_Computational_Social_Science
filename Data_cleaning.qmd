@@ -1,0 +1,472 @@
+---
+title: "Data cleaning"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+### Libraries
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(xml2)
+library(magrittr)
+library(utils)
+library(rvest)
+```
+
+## Primary data
+
+```{r}
+ccaa <- read_delim("ccaa.csv", delim = ";")
+channels <- read_delim("channels.csv", delim = ";")
+consumption <-read_delim("consumption_data.csv", delim = ";")
+products <- read_delim("products.csv", delim = ";")
+```
+
+### Consumption
+
+```{r}
+
+consumption <-consumption |> 
+  mutate(province = str_replace(provincia, "0$", "")) |> 
+  select(-ine, -municipio, -provincia) |> 
+  mutate(mes = as.character(mes)) |> 
+  mutate(mes = paste0(substr(mes, 1, 4), "-", substr(mes, 5, nchar(mes)))) |> 
+  mutate(mes = ym(mes)) |> 
+  rename(date = mes) |> 
+  mutate(unidades_equivalentes = gsub(",", ".", unidades_equivalentes)) |> 
+  mutate(e_u = as.numeric(unidades_equivalentes)) |> 
+  mutate(year = year(date)) |> 
+  select(-unidades_equivalentes)
+  
+
+```
+
+#### Matching codes Autonomous Communities and Provinces
+
+```{r}
+
+#url <- "https://www.ine.es/en/daco/daco42/codmun/cod_ccaa_provincia_en.htm"
+#
+#html_content <- read_html(url)
+#
+## Locate the table element using XPath and extract the table into a data frame
+#table <- html_content %>%
+#  html_element(xpath = "//*[@id='contieneHtml']/table") %>%
+#  html_table()
+#
+#
+#write.csv(table, "ac_codes.csv")
+
+ac_codes <- read.csv("ac_codes.csv")
+
+ac_codes <- ac_codes |> 
+ mutate(CODAUTO = str_replace_all(CODAUTO, "^0", "")) |> 
+ slice(-51) |> 
+ mutate(CPRO = as.character(CPRO))
+
+
+consumption <- consumption |> 
+  left_join(ac_codes, by = c("province" = "CPRO")) |> 
+  rename(PCODE = province) |> 
+  mutate(CODAUTO = as.character(CODAUTO))
+
+```
+
+#### Joining tables and renaming
+
+```{r}
+consumption <- consumption |> 
+  left_join(products, by = c("codigo_producto" = "codigo_producto")) |>
+  left_join(channels, by = c("canal" = "canal")) |> 
+  rename(product_code = codigo_producto) |> 
+  rename(AC_code = CODAUTO) |> 
+  rename(P_code = PCODE) |> 
+  rename(AC = "Autonomous.Community") |> 
+  rename(product = prod) |> 
+  rename(channel = canal_name) |>
+  rename(channel_code =canal) 
+
+
+```
+
+#### Creating product subcategories in English
+
+```{r}
+consumption <- consumption |> 
+  mutate(sub_cat_prod =case_when(
+    str_detect(product, "AGUAS") ~ "Water",
+    str_detect(product, "BATIDOS") ~ "Smoothies",
+    str_detect(product, "BEBIDAS DE ALTA GRADUACION") ~ "Hard_liquor",
+    str_detect(product, "BEBIDAS FUNCIONALES") ~ "Functional_drinks",
+    str_detect(product, "BEBIDAS REFRESCANTES") ~ "Sodas",
+    str_detect(product, "CERVEZAS ") ~ "Beers",
+    str_detect(product, "CONSERVAS ") ~ "Preserved_food",
+    str_detect(product, "COS.DECO|FACIAL") ~ "Cosmetics",
+    str_detect(product, "ESPUMOSAS|ESPUMOSOS") ~ "Sparkling_wine",
+    str_detect(product, "GALLETAS|BOMBONES|CHOCOLATES|GOLOSINAS")|
+      product_code == 106 ~ "Cookies_chocolat_candy",
+    str_detect(product, "LECHE") ~ "Milk",
+    str_detect(product, "PAN|BOLLERIA") ~ "Bread",
+    str_detect(product, "PESCADO|SURIMI") ~ "Fish",
+    str_detect(product, "PLATOS PREPARADOS|PREPARADA")| 
+      product_code == 105|
+      product_code == 136|
+      product_code == 152 ~ "(semi)pre-made_food",
+    str_detect(product, "PRODUCTOS BEBE") ~ "Baby_food",
+    str_detect(product, "VINO") ~ "Wine",
+    str_detect(product, "ZUMO|ZUMOS") ~ "Juices",
+    product_code == 1|
+      product_code == 134|
+      product_code == 135|
+      product_code == 140 ~ "Oil_spices_salsas",
+    product_code == 2 ~ "Olives",
+      product_code == 12|
+      product_code == 16 ~ "Sugar_and_syrup",
+    product_code == 13|
+      product_code == 14|
+      product_code == 46|
+      product_code == 92|
+      product_code == 93|
+      product_code == 93|
+      product_code == 102|
+      product_code == 103|
+      product_code == 129|
+      product_code == 137|
+      product_code == 76|
+      product_code == 161|
+      product_code == 50 ~ "Household_essentials",
+    product_code == 15 ~ "Rice",
+    product_code == 61|
+      product_code == 62|
+      product_code == 65|
+      product_code == 73|
+      product_code == 75|
+      product_code == 86|
+      product_code == 89|
+      product_code == 112|
+      product_code == 113|
+      product_code == 116|
+      product_code == 130|
+      product_code == 131|
+      product_code == 133|
+      product_code == 151|
+      product_code == 153|
+      product_code == 154|
+      product_code == 65 ~ "Personal_hygene_and_care",
+    product_code == 63 ~ "Animal_food",
+    product_code == 49|product_code == 91 ~ "Coffee_and_tea",
+    product_code == 114 ~ "Pasta",
+    product_code == 120|
+      product_code == 139|
+      product_code == 157|
+      product_code == 77|
+      product_code == 160|
+      product_code == 162 ~ "Vegetables",
+    product_code == 132 ~ "Christmas_products",
+    product_code == 150|
+      product_code == 101 ~ "Legumes",
+    product_code == 155 ~ "Cheese",
+    product_code == 156|
+      product_code == 158|
+      product_code == 88 ~ "Cake_icecream_desert",
+    product_code == 115|
+      product_code == 159 ~ "Meat",
+    product_code == 83 ~ "Nuts",
+    product_code == 90 ~ "Eggs",
+    product_code == 48|
+      product_code == 51|
+      product_code == 72|
+      product_code == 107|
+      product_code == 108|
+      product_code == 109|
+      product_code == 104 ~ "Breakfast_products"
+    
+    ))
+```
+
+```{r}
+c <-consumption |> 
+  distinct(sub_cat_prod)
+
+non_alc_drinks <- c("Water", "Smoothies", "Sodas", "Functional_drinks", "Juices")
+
+alc_drinks <- c("Wine","Hard_liquor", "Beers", "Sparkling_wine")
+
+meat_fish <- c("Meat", "Fish")
+
+vegetables_legumes <- c("Vegetables", "Legumes")
+
+dairy_eggs <- c("Milk", "Eggs", "Cheese" )
+
+dry_goods <- c("Rice", "Pasta")
+
+confectionery_desserts <- c("Cookies_chocolat_candy", "Cake_icecream_desert")
+
+bread_breakfast <- c("Breakfast_products", "Bread")
+
+condiments <- c("Sugar_and_syrup", "Olives", "Oil_spices_salsas", "Nuts" )
+
+personal_care <- c("Personal_hygene_and_care", "Cosmetics")
+
+preserved_premade <- c("(semi)pre-made_food", "Preserved_food" )
+
+other <- c("Christmas_products", "Animal_food")
+
+
+
+consumption <- consumption |> 
+  mutate(cat_prod = case_when(
+    sub_cat_prod %in% non_alc_drinks ~ "non_alc_drinks",
+    sub_cat_prod %in% alc_drinks ~ "alc_drinks",
+    sub_cat_prod %in% meat_fish ~"meat_fish",
+    sub_cat_prod %in% vegetables_legumes ~ "vegetables_legumes",
+    sub_cat_prod %in% dairy_eggs ~ "dairy_eggs",
+    sub_cat_prod %in% dry_goods ~ "dry_goods",
+    sub_cat_prod %in% confectionery_desserts ~"confectionery_desserts",
+    sub_cat_prod %in% bread_breakfast ~ "bread_breakfast",
+    sub_cat_prod %in% condiments ~ "condiments",
+    sub_cat_prod %in% personal_care ~ "personal_care",
+    sub_cat_prod %in% preserved_premade ~ "preserved_premade",
+    sub_cat_prod %in% other ~ "other",
+    TRUE ~ sub_cat_prod
+  ))
+
+consumption |> 
+  distinct(cat_prod
+  )
+
+consumption<- consumption |> 
+  mutate(product_categories = case_when(cat_prod == "non_alc_drinks" ~ "Non-alcoholic beverages",
+                                        cat_prod == "alc_drinks" ~ "Alcoholic beverages",
+                                        cat_prod == "meat_fish" ~ "Meat and Fish",
+                                        cat_prod == "vegetables_legumes" ~ "Vegetables and Legumes",
+                                        cat_prod == "dairy_eggs" ~ "Dairy and Eggs",
+                                        cat_prod == "dry_goods" ~ "Dry goods",
+                                        cat_prod == "confectionery_desserts" ~ "Confectionery and Desserts",
+                                        cat_prod == "bread_breakfast" ~ "Bread and Breakfast",
+                                         cat_prod == "condiments" ~ "Condiments",
+                                         cat_prod == "personal_care" ~ "Personal care",
+                                         cat_prod == "preserved_premade" ~ "Preserved and Premade",
+                                         cat_prod == "other" ~ "Other",
+                                        cat_prod == "Baby_food" ~ "Baby food",
+                                        cat_prod == "Household_essentials" ~ "Household essentials",
+                                        cat_prod == "Coffee_and_tea" ~ "Coffee and Tea",
+                                        ))
+```
+
+## Extra data
+
+### GDP per capita
+
+Per year and autonomous community
+
+```{r}
+GDP <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/GDP.xlsx", sheet = "Table_2", skip = 3)
+
+colnames(GDP) <- GDP[1, ]
+GDP <- GDP[-1, ]
+colnames(GDP) <- make.unique(colnames(GDP))
+
+GDP <-GDP |> 
+  select("Autonomous Community", "2021 (P)", "2022 (A)", any_of(as.character(2000:2020))) |> 
+  slice(-1, -64:-74) |> 
+  drop_na() |> 
+  rename("2021" = "2021 (P)") |> 
+  rename("2022" = "2022 (A)") |> 
+  rename("AC" = "Autonomous Community" )
+
+
+GDP <- GDP |> 
+  pivot_longer(cols = 2:24, names_to = "year", values_to = "GDP") |> 
+  mutate(AC_N = case_when(
+    AC == "ANDALUCÍA"                   ~ 1,
+    AC == "ARAGÓN"                      ~ 2,
+    AC == "ASTURIAS, PRINCIPADO DE"     ~ 3,
+    AC == "BALEARS, ILLES"              ~ 4,
+    AC == "CANARIAS"                    ~ 5,
+    AC == "CANTABRIA"                   ~ 6,
+    AC == "CASTILLA Y LEÓN"             ~ 7,
+    AC == "CASTILLA - LA MANCHA"        ~ 8,
+    AC == "CATALUÑA"                    ~ 9,
+    AC == "COMUNITAT VALENCIANA"        ~ 10,
+    AC == "EXTREMADURA"                 ~ 11,
+    AC == "GALICIA"                     ~ 12,
+    AC == "MADRID, COMUNIDAD DE"        ~ 13,
+    AC == "MURCIA, REGIÓN DE"           ~ 14,
+    AC == "NAVARRA, COMUNIDAD FORAL DE" ~ 15,
+    AC == "PAÍS VASCO"                  ~ 16,
+    AC == "RIOJA, LA"                   ~ 17,
+    AC == "CEUTA"                       ~ 18,
+    AC == "MELILLA"                     ~ 19,
+    TRUE                                ~ NA  
+  )) |> 
+  mutate(year = as.numeric(year)) |> 
+  mutate(AC_N = as.character(AC_N))
+ 
+```
+
+### Production aggregation
+
+Per year
+
+```{r}
+
+production_agg <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/production_agg.xlsx", skip = 6)
+
+production_agg <- production_agg |> 
+  slice(-1, -7:-12) |> 
+  rename("production_type" = "...1") |> 
+  pivot_longer(cols = 2:24, names_to = "year", values_to = "production aggregation") |> 
+   filter(production_type == "GHI Wholesale and retail trade; repair of motor vehicles and motorcycles; transportation and storage; accommodation and food service activities") |> 
+  mutate(year = as.numeric(year))
+
+```
+
+### Consumer Price Index
+
+Base 2016
+
+#### Food
+
+```{r}
+food_cpi <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/Food_CPI.xlsx", skip = 8)
+
+food_cpi <- food_cpi |> 
+  slice(-1, -23:-29) |> 
+  rename("AC" = "...1") |> 
+  dplyr::select(-2) |> 
+  pivot_longer(cols = 2:99, names_to = "date", values_to = "food_cpi")
+
+
+```
+
+#### Non-alcoholic beverages
+
+```{r}
+
+non_alc_bev_cpi <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/non_alc_bev_CPI.xls", skip = 8)
+
+non_alc_bev_cpi <- non_alc_bev_cpi |> 
+  slice(-21:-27) |> 
+  rename("AC" = "...1") |> 
+  dplyr::select(-2) |> 
+  pivot_longer(cols = 2:99, names_to = "date", values_to = "non_alc_bev_cpi") |> 
+  mutate(AC = case_when(AC == "National" ~ "99 National",
+                        TRUE ~ AC))
+```
+
+#### Alcoholic beverages
+
+```{r}
+alc_bev_cpi <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/alc_bev_CPI.xlsx", skip = 8)
+
+alc_bev_cpi <- alc_bev_cpi |> 
+  slice(-21:-27) |> 
+  rename("AC" = "...1") |> 
+  dplyr::select(-2) |> 
+  pivot_longer(cols = 2:99, names_to = "date", values_to = "alc_bev_cpi") |> 
+  mutate(AC = case_when(AC == "National" ~ "99 National",
+                        TRUE ~ AC))
+```
+
+#### Personal care
+
+```{r}
+pers_care_cpi <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/Personal_care_CPI.xlsx", skip = 8)
+
+pers_care_cpi <- pers_care_cpi |> 
+  slice(-21:-27) |> 
+  rename("AC" = "...1") |> 
+  dplyr::select(-2) |> 
+  pivot_longer(cols = 2:99, names_to = "date", values_to = "pers_care_cpi") |> 
+  mutate(AC = case_when(AC == "National" ~ "99 National",
+                        TRUE ~ AC))
+```
+
+#### Joining
+
+```{r}
+
+
+CPI <- full_join(food_cpi, non_alc_bev_cpi, by = c("AC", "date"))
+
+CPI <- full_join(CPI, alc_bev_cpi, by = c("AC", "date"))
+
+CPI <- full_join(CPI, pers_care_cpi, by = c("AC", "date"))
+
+
+CPI <- CPI |> 
+  mutate(date = str_replace_all(date,"M", "-")) |> 
+  mutate(date = ym(date)) |> 
+  separate(AC, into = c("AC_N", "AC"), sep = " ", remove = TRUE, extra = "merge") |> 
+  mutate(AC_N = as.character(AC_N)) |> 
+  mutate(AC_N = str_replace_all(AC_N, "^0", ""))  
+
+```
+
+### Consumed Quantities (Household Budget Survey)
+
+Per year and product
+
+#### Total quantities consumed (thousand of units)
+
+```{r}
+
+total_consumed_quant <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/Consumed_quant.xls", skip = 7) |> 
+  select(1:8)
+
+total_consumed_quant<- total_consumed_quant |> 
+  slice(-86:-83) |> 
+  rename("product" = "...1") |> 
+  pivot_longer(cols = 2:8, names_to = "year", values_to = "total_consumed_quant") |> 
+  mutate(year = str_replace_all(year, "\\.\\.\\.\\d+", " "))
+
+
+```
+
+#### Average quantity consumed per person
+
+```{r}
+
+person_consumed_quant <- read_excel("/Users/rnvis/Documents/Thesis/Data_extra/Consumed_quant.xls", skip = 7) |> 
+  select(1, 9:15)
+
+person_consumed_quant<- person_consumed_quant |> 
+  slice(-86:-83) |> 
+  rename("product" = "...1") |> 
+  pivot_longer(cols = 2:8, names_to = "year", values_to = "person_consumed_quant") |> 
+  mutate(year = str_replace_all(year, "\\.\\.\\.\\d+", " "))
+
+```
+
+#### Joining
+
+```{r}
+
+consumed_quant <- full_join(total_consumed_quant, person_consumed_quant, by = c("product", "year"))
+
+```
+
+## Joining all data sets
+
+```{r}
+
+total <- consumption |> 
+  left_join(GDP, by = c("year" = "year","AC_code" = "AC_N" )) |> 
+  left_join(CPI, by = c("AC_code" = "AC_N", "date" = "date")) |> 
+  left_join(production_agg, by = c("year" = "year"), relationship = "many-to-many") |> 
+  select(-AC.x, -AC.y, -production_type) |> 
+  rename(production_agg = "production aggregation") |> 
+  mutate(date = ymd(date)) |> 
+  mutate(GDP_month = as.numeric(GDP)/12) |> 
+  mutate(production_agg_month = production_agg/12) |> 
+select(year, date, AC, AC_code, Province, P_code, product, product_code,sub_cat_prod, cat_prod, product_categories, channel, channel_code, e_u, GDP_month, GDP, food_cpi, non_alc_bev_cpi, alc_bev_cpi, pers_care_cpi, production_agg_month, production_agg) 
+  
+write.csv(total, "full_data.csv")
+```
+
+### 

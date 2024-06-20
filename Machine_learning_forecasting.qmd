@@ -1,0 +1,1289 @@
+---
+title: "Machine Learning Forecasting Food Consumption"
+format: html
+editor: visual
+---
+
+## Introduction
+
+Each year massive amounts of food are being wasted all around the world. According to Eurostat (2023), around 131 kilograms of food is wasted per inhabitant, with households trowing away 70 kg per inhabitant, accounting for 54% of the total food waste per year, restaurants throwing away 12 kg per inhabitants, accounting for 12% and retail and food distributors throwing out 9 kg per inhabitant accounting for 7% of the total food waste. Food waste is problematic for the survival of our planet. One of the major causes of environmental degradation is the exploitation of natural resources to feed our ever growing population. The production is energy costly, consumes vast amounts of fresh water and accounts for 30% of all greenhouse gas emissions (Garcia-Herrero et al., 2018). To maintain food security and limit the strain food production imposes on our planet with the worlds population estimated to have grown to 9.7 billion people in 2050 (UN, n.d.), we need to become more frugal with our natural resources. We need to stop food waste.
+
+One way to reduce the food waste of restaurants and the food distribution sector is for these sectors to be better informed about the upcoming consumption patterns and adjust their purchasing accordingly. Time-series models can be applied to predict this future consumption.
+
+The aim of this thesis will be to predict consumption patterns of foodstuffs in Spain by autonomous community, sales channel and product type. The main data set that will be used for the modeling of these predictions contains time-series data starting in 2018 until 2024 per autonomous community including information on:
+
+-   The sales channel (Tradicional, Cash & Carry, Droguerías, Hypermarket, Others (small stores) and Online)
+
+-   The equivalent unit consumed per product type.
+
+This main data set will be enriched by including longitudinal data obtained from the *Instituto Nacional de Estadistica* on to enhance the predictive performance. This data will include:
+
+-   [GDP per autonomous community](https://www.ine.es/dyngs/INEbase/en/operacion.htm?c=Estadistica_C&cid=1254736167628&menu=resultados&idp=1254735576581)
+
+-   Production aggregation of the 1) wholesale and retail trade; 2) repair of motor vehicles and motorcycles; 3) transportation and storage; and 4) accommodation and food service activities
+
+Two predictive models are built: a global model including Decision Tree, Random Forest and Prophet as well as a well tuned Prophet model.
+
+The machine learning models utilised in the global model are included in the package ‘[Modeltime’](https://cran.r-project.org/web/packages/modeltime/index.html) in R. This package is an extension to the ’Tidymodels’ ecosystem targeted at time-series models. The package functions with the following workflow: 1) Creating a modeltime table, 2) Calibrating the model by performing forecasting in the train set and consequently testing the accuracy, and 3) Refitting and forecasting the future. The finely tuned Prophet model is done using the original Prophet package by Facebook.
+
+## Libraries
+
+Make sure the packages are downloaded and consequently the libraries loaded.
+
+```{r}
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("tidymodels")
+library(tidymodels)
+#install.packages("modeltime")
+library(modeltime)
+#install.packages("timetk")
+library(timetk)
+#install.packages("lubridate")
+library(lubridate)
+#install.packages("trelliscopejs")
+library(trelliscopejs)
+#install.packages("ggbreak")
+library(ggbreak)
+#install.packages("cowplot")
+library(cowplot)
+#install.packages("yardstick")
+library(yardstick)
+#install.packages("ranger")
+library(ranger)
+#install.packages("timeDate")
+library(timeDate)
+#install.packages("prophet")
+library(prophet)
+#install.packages("parallel")
+library(parallel)
+#install.packages("doParallel")
+library(doParallel)
+#install.packages("tune")
+library(tune)
+#install.packages("imputeTS")
+library(imputeTS)
+#install.packages("jtools")
+library(jtools)
+#install.packages("showtext")
+library(showtext)
+#install.packages("patchwork")
+library(patchwork)
+#install.packages("DataExplorer")
+library(DataExplorer)
+
+```
+
+## Layout
+
+This section sets the theme used for the plots computed later in the code. Note that one might need to change the patch of fond_add() depending on the PC used.
+
+```{r}
+
+#Add google font "Lato"
+font_add_google("Lato", "lato")
+showtext_auto()
+
+#Add font Times New Roman, adjust patch if necessary
+font_add("Times New Roman", regular = "C:/Windows/Fonts/times.ttf",
+         bold = "C:/Windows/Fonts/timesbd.ttf",
+         italic = "C:/Windows/Fonts/timesi.ttf",
+         bolditalic = "C:/Windows/Fonts/timesbi.ttf")
+
+#Modify APA theme
+theme_apa_cus <- theme_apa() +
+  theme(
+    text = element_text(family = "lato"),
+    plot.title = element_text(family = "Times New Roman", face = "bold", size = 18, hjust = 0),
+    plot.subtitle = element_text(family = "Times New Roman", face = "italic", size = 18, hjust = 0),
+    axis.title = element_text(family = "lato", size = 12),
+    axis.text = element_text(family = "lato", size = 12),
+    legend.title = element_text(family = "lato", size = 12),
+    legend.text = element_text(family = "lato", size = 12)
+  )
+
+
+```
+
+## Data
+
+In this section, the data is being loaded. Note that the patch needs to be changed depending on where the data file is stored
+
+```{r}
+
+#Load the data
+data <- read.csv("C:/Users/rnvis/Documents/Thesis_Forecasting_consumption_foodstuffs/Data/full_data.csv")
+
+
+#Convert date to date variable and drop NA in Autonomous Communities
+data <- data |> 
+   mutate(date = ymd(date)) |> 
+   drop_na(AC) 
+
+data_cat <- data |> 
+ distinct(cat_prod, product_categories)
+
+write.csv(data_cat, "data_cat.csv", row.names = FALSE)
+
+```
+
+### Missing data
+
+Missing data due to incomplete time series (GDP and production aggregation)
+
+```{r}
+set.seed(123)
+
+#Plot missing data
+plot_missing(data)
+
+# Impute NA external variables
+data$GDP_month <- na_interpolation(data$GDP_month)
+data$production_agg_month <-na_interpolation(data$production_agg_month)
+
+#do not include channel: 'other' and 'cash and carry and delete mal functioning product categories
+data <- data |> 
+  drop_na(cat_prod) |> 
+   filter(!(channel_code %in% c(6, 2))) |>  
+   filter(!(cat_prod %in% c("Coffee_and_tea", "confectionery_desserts", "Household_essentials", "personal_care")))
+  
+#PLot missing data again to check if imputatation worked
+plot_missing(data)
+
+
+
+```
+
+### Panel data
+
+This code chunk transforms the data to panel data. In other words, each time series gets its own ID
+
+```{r}
+#Create panel data
+data_panel <- data|> 
+   group_by(date, AC_code, channel_code, cat_prod) |> 
+   mutate(e_u = sum(e_u)) |> 
+   ungroup() |> 
+   mutate(id = paste(AC_code, channel_code, cat_prod, sep = "-")) |> 
+   mutate(id = as.character(id)) |> 
+   distinct(id, e_u, .keep_all = TRUE) |>
+ select(date, e_u, id, GDP_month, production_agg_month, food_cpi, non_alc_bev_cpi, alc_bev_cpi, AC, AC_code) 
+
+
+```
+
+```{r}
+#Select only useful variables
+data_panel<-data_panel |> 
+  select(date, e_u, id, GDP_month, production_agg_month, food_cpi, non_alc_bev_cpi,          alc_bev_cpi)
+
+```
+
+### Missing Timeseries
+
+The following chunks computed a data frame including all possible time series. Then, it is shown which time series have missing variables.
+
+```{r}
+
+#Create index for the full range of dates in the timseries
+complete_index <- seq(from=min(data_panel$date), to=max(data_panel$date), by="month")
+
+# Create a complete data frame with all time points
+complete_data <- data.frame(timestamp = complete_index)
+
+#Compute a list with all ids in the panel data
+id_list<- data_panel |> 
+  distinct(id) |> 
+  pull()
+
+#Create a function to merge each time series with the index including all possible time points
+
+data_panel_red <- data_panel |> 
+  select(id, e_u, date)
+
+missing_row <- function(id_c){
+  
+  data_t <- data_panel_red |> 
+  filter(id == id_c)
+
+merged_data <- NULL
+
+# Merge the original data with the complete data frame to identify missing points
+merged_data <- complete_data |> 
+  left_join(data_t, by= c("timestamp" = "date"))
+
+return(merged_data)
+  
+}
+
+m <- list()
+
+#Apply the function
+for (i in seq_along(id_list)) {
+  result <-missing_row(id_c = id_list[i])
+  m[[id_list[i]]] <- result
+}
+
+#Compute a list with timeseries containing NA
+na_list <- list()
+
+for (i in seq_along(m)){
+ na_list [[id_list[i]]] <- anyNA(m[[i]]) 
+  
+}
+
+#Collect the na_list
+df_na<- do.call(rbind, na_list)
+df_na <- as.data.frame(df_na)
+df_na$id <- rownames(df_na)
+rownames(df_na) <- NULL
+
+df_na <-df_na |> 
+  rename(missing = V1) |> 
+  select(id, missing ) 
+
+id_missing<-df_na |> 
+  filter(missing == TRUE) |> 
+  select(id) |> 
+  pull()
+
+id_missing
+
+print_df_missing <- function(id_m){
+  data_m <- data_panel_red |> 
+  filter(id == id_m)
+  
+}
+
+#Print the IDs with missing variables
+for (i in seq_along(id_missing)){
+  print_df_missing(id_m = id_missing[i] )
+}
+```
+
+```{r}
+set.seed(123)
+
+#Generating NA for missing time points 
+
+# Create a complete date sequence
+date_sequence <- seq(min(data_panel$date), max(data_panel$date), by = "month")
+
+# Create a data frame with all combinations of IDs and dates
+complete_panel <- expand.grid(ID = unique(data_panel$id), timestamp = date_sequence) |> mutate(id_date = paste0(ID, timestamp))
+
+# Create an ID of both the time series id and the data to merge the data set with the complete panel data set
+data_panel <- data_panel |> 
+  mutate(id_date = paste0(id, date))
+
+# Merge original data with complete data frame, ensuring all combinations are present
+data_panel <- complete_panel %>%
+  left_join(data_panel, by = c("id_date"= "id_date"))
+
+#Compute NA in the data set, both count and percentage
+na_data <- data_panel |> 
+  filter(is.na(e_u)) |> 
+  group_by(ID) |> 
+  summarise(n_na = n()) |>
+  mutate(perc_na = (n_na/71)*100) |> 
+  arrange(n_na) 
+
+#Plot the NA
+na_data|>  
+  ggplot(aes(x = factor(ID, levels = ID), y = perc_na)) +  
+  geom_col() +
+  labs(x = "ID", y = "Percentage of NA values in e_u", title = "Percentage of NA values in equivalent units by ID") +
+  theme_apa_cus +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Rotate 
+
+# Create a list of id (timeseries), with NA higher then 10% that should be deleted 
+id_delete <- na_data |> 
+  filter(perc_na > 10) |> 
+  select(ID) |> 
+  pull()
+
+id_delete
+
+# Filter out the ID with NA higher then 10%
+data_panel<-data_panel |> 
+  filter(!ID %in% id_delete)
+
+data_panel <- data_panel |> 
+  arrange(timestamp, ID) 
+
+
+# Impute missing values using linear interpolation within each ID group
+data_panel <- data_panel %>%
+  group_by(ID) %>%
+  mutate(across(where(is.numeric), ~na_interpolation(.))) %>%
+  ungroup() |> 
+  select(-id, -date) |> 
+  rename(id = ID, date = timestamp) |> 
+  select(-id_date) 
+
+plot_missing(data_panel)
+
+#Checking for duplicates
+data_panel |>
+  group_by(id, date, e_u) |> 
+  filter(n() > 1)
+
+
+
+```
+
+## Time series machine learning - Global Forecasting
+
+Global Forecasting (Multi-Series Modeling) involves developing a single predictive model that simultaneously considers multiple time series. This approach aims to capture the underlying patterns common across the series, reducing the impact of noise from individual series. It is computationally efficient, easier to maintain, and can provide robust generalizations across different time series, although it may compromise some detailed insights specific to each individual series.
+
+### Data Wrangling
+
+In order to perform global forecasting, IDs need to be created based on each combination of Autonomous Community, sales channel and product category to identify the different time series to be predicted. Also, the data is prepared to be splitted into test and train data. Rows outisde of the time span of the time series are created and filled with NA in the equivalent units column and will later be used for performing the forecasting.
+
+```{r}
+
+set.seed(123)
+#Use this line to compute the model with fewer time series, in this case 5
+#selected_ids <- sample(unique(data_panel$id), 5) 
+
+data_panel <- data_panel |> 
+  #filter(id %in% selected_ids) |> ##Use this line to compute the model with fewer time series
+  group_by(id) |> 
+  future_frame(.date_var = date,
+               .length_out = 12, # Creating rows with dates outside of the time span of the data with NA for e_u
+               .bind_data = TRUE) |> 
+  ungroup() |> 
+  mutate(id = fct_drop(id)) #Make sure IDs that are catgeorical only have levels that are in the data set
+
+
+
+```
+
+```{r}
+#Training and test data
+
+#Data set on which test and train data set will be based, excluding the forecast frame
+data_panel_prep <- data_panel |> 
+  filter(!is.na(e_u))
+
+data_panel_prep |> 
+  group_by(id) |> 
+  tk_summary_diagnostics()
+
+```
+
+#### Including Covid Data
+
+As the Covid-19 pandemic with its consequent measures such as the lockdowns interrupted the trends in the time series, it is important to account for these interruptions in the model. Hence, the different Covid-19 periods are included in the model as holidays.
+
+```{r}
+
+# Accounting for Covid-19 measures
+covid_periods <- data.frame(
+  holiday = c('community_transmission', 'state_of_alarm', 'non_essential_halt', 
+              'lifting_restrictions', 'de_escalation', 'resurgence', 'state_of_emergency'),
+  ds = as.Date(c('2020-02-26', '2020-03-13', '2020-03-28', 
+                 '2020-04-13', '2020-05-02', '2020-07-17', '2020-10-01')),
+  lower_window = 0,
+  upper_window = c(15, 14, 15, 18, 90, 105, 22)) # Duration of each period
+
+```
+
+### Preparing Forecast
+
+A data frame named *future_data_panel* is created by filtering the rows with NA in the equivalent units column as these rows are created artificially with dates outside of the time span of the time series to later do the forecasting on.
+
+```{r}
+# Forecast Data
+
+#Data frame with rows containing dates outside of the time span of the data with NA for e_u
+future_data_panel <- data_panel |> 
+  filter(is.na(e_u))
+
+future_data_panel |> 
+  group_by(id) |> 
+  tk_summary_diagnostics()
+
+
+
+```
+
+### Splitting Data into Train and Test data
+
+The data is splitted into test and train data trough allocating 47 months for training the model and 12 months for testing the model.
+
+```{r}
+
+set.seed(123)
+#SPLITTING
+#Panel data split
+
+splits <- data_panel_prep |> 
+  time_series_split(
+    date_var = date,
+    initial = "47 months",
+    assess = "12 months", 
+    slice = 3,
+    cumulative = TRUE
+  )
+
+
+
+
+```
+
+### Preprocessing
+
+The recipes that will later be used to train the different algorithm are computed below.
+
+```{r}
+
+set.seed(123)
+
+
+#Recipe needed for ModelTime as algorithms included in ModelTime need a date feature
+recipe_spec_1 <- recipe(e_u ~ ., training(splits)) |>                         step_timeseries_signature(date) |>  #calendar features important for machine learning 
+      step_rm(matches ("(.iso$)|(.xts$)|(day) | (hour) | (minute)| (second) | (am.pm)")) |> #Remove unnecessary calender feautures 
+        step_normalize(date_index.num, date_year) |> 
+        step_dummy(all_nominal(), one_hot = TRUE) #Dummy all factors
+
+#Recipe for models from Tidymodels (eg. parship), date gets a new role
+recipe_spec_2 <-recipe_spec_1 |> 
+  update_role(date, new_role = "id") 
+ 
+
+#Note that date is a predictor -> ModelTime
+recipe_spec_1 |> prep() |> summary()
+
+#Note date is id
+recipe_spec_2 |> prep() |> summary()
+
+
+recipe_spec_3 <- recipe(e_u ~ date, training(splits)) |>                         step_timeseries_signature(date) |>  #calendar features important for machine learning 
+      step_rm(matches ("(.iso$)|(.xts$)|(day) | (hour) | (minute)| (second) | (am.pm)")) |> #Remove unnecessary calender feautures 
+        step_normalize(date_index.num, date_year) |> 
+        step_dummy(all_nominal(), one_hot = TRUE) #Dummy all factors
+
+
+#Recipe for models from Tidymodels (eg. parship), date gets a new role
+recipe_spec_4 <-recipe_spec_3 |> 
+  update_role(date, new_role = "id")
+
+
+```
+
+### Training Models 
+
+In this part of the code, Tidymodel workflows are created for Decision Tree, Random Forest and Prophet, both including and excluding the external regressors.
+
+```{r}
+set.seed(123)
+
+
+#To measure the duration of the computation
+start_time <- Sys.time()
+
+#Decsion Tree workflow based on the Rpart package
+dt_workflow <- workflow() |>
+  add_model(decision_tree() |>
+           set_engine("rpart") |>
+           set_mode("regression")) |>
+  add_recipe(recipe_spec_2) |>
+  fit(training(splits))
+
+
+# Random Forest workflow based on the Ranger package
+rf_workflow <- workflow() |>
+  add_model(rand_forest() |>
+           set_engine("ranger") |>
+           set_mode("regression")) |>
+  add_recipe(recipe_spec_2) |> 
+  fit(training(splits))
+
+
+# Prophet workflow based on the Prophet package
+wflw_fit_prophet <- workflow() |> 
+  add_model(prophet_reg() |>  
+              set_engine(engine = "prophet",
+                         holidays = covid_periods))|> 
+  add_recipe(recipe_spec_1) |> 
+  fit(training(splits))
+
+
+#Decsion Tree workflow based on the Rpart package without external regressors
+dt_workflow_nr <- workflow() |>
+  add_model(decision_tree() |>
+           set_engine("rpart") |>
+           set_mode("regression")) |>
+  add_recipe(recipe_spec_4) |> #Recipe without external regressors
+  fit(training(splits))
+
+
+# Random Forest workflow based on the Ranger package without external regressors
+rf_workflow_nr <- workflow() |>
+  add_model(rand_forest() |>
+           set_engine("ranger") |>
+           set_mode("regression")) |>
+  add_recipe(recipe_spec_4) |> 
+  fit(training(splits))
+
+
+
+# Prophet workflow based on the Prophet package without external regressors
+wflw_fit_prophet_nr <- workflow() |> 
+  add_model(prophet_reg() |>  
+              set_engine("prophet")) |> 
+  add_recipe(recipe_spec_3) |> 
+  fit(training(splits))
+
+#End time measurement
+end_time <- Sys.time()
+#Duration
+time_taken <- end_time - start_time
+time_taken
+
+
+
+```
+
+#### Preparing ModelTime table and Calibration
+
+This section calibrates (cross-validates) the trained models with the testing data
+
+```{r}
+
+#Creating time ModelTime table inclusing all the computed models
+submodels_tbl <- modeltime_table(
+  dt_workflow,
+  rf_workflow,
+  wflw_fit_prophet,
+ dt_workflow_nr,
+ rf_workflow_nr,
+ wflw_fit_prophet_nr
+  )
+
+#Calibrate Testing Data
+submodels_calibrated_tbl <- submodels_tbl |> 
+ modeltime_calibrate(
+      new_data = testing(splits),
+      id       = "id")
+
+```
+
+#### Accuracy
+
+Here, both the global and local accuracy for the model is generated
+
+```{r}
+options(scipen = 9999)
+
+#Measure Test Accuracy Global
+acc_global <-submodels_calibrated_tbl |> 
+  modeltime_accuracy(acc_by_id = FALSE) |> 
+   mutate(.model_desc = case_when(.model_id == 4 ~ "Decision Tree (no regressors)",
+                                 .model_id == 5 ~ "Random Forest (no regressors)",
+                                 .model_id == 6 ~ "Prophet (no regressors)",
+                                 .model_id == 1 ~ "Decision Tree",
+                                 .model_id == 2 ~ "Random Forest",
+                                 .model_id == 3 ~ "Prophet")) |> 
+  select(-.type) |> 
+  rename("ID" = .model_id, Model = .model_desc)
+
+#write.csv(acc_global, "acc_global.csv", row.names = FALSE)
+
+#Measure Test Accuracy Local
+acc_local <-submodels_calibrated_tbl |> 
+  modeltime_accuracy(acc_by_id = TRUE)
+
+#Collect the lowest local accuracy per timeseries for the models including the external regressors
+acc_local_min_mape <- acc_local |> 
+  filter(.model_id %in% c(1,2,3)) |> 
+  group_by(id) |> 
+  filter(mape == min(mape)) |> 
+  ungroup() 
+
+#Collect the lowest local accuracy per timeseries for the models including the external regressors
+acc_local_min_mape_nr <- acc_local |> 
+  filter(.model_id %in% c(4,5,6)) |> 
+  group_by(id) |> 
+  filter(mape == min(mape)) |> 
+  ungroup()
+
+
+```
+
+In the following section boxplots for the MAPE as well as the mean and median MAPE per product category are computed.
+
+```{r}
+
+#Collect the product category names 
+data_cat <- data |> 
+  distinct(cat_prod, product_categories)
+
+#Seperate the IDs into columns for AC, sales channel and product category and join with the product category names to obtain the formal names
+acc_local_split <- acc_local_min_mape |> 
+  mutate(id_2 = id) |> 
+  separate(id_2, into = c("AC", "channel", "product_cat"), sep = "-") |> 
+  left_join(data_cat, by = c("product_cat" = "cat_prod")) |> 
+  mutate(.model_desc = case_when(.model_id == 1 ~ "Decision Tree",
+                                 .model_id == 2 ~ "Random Forest",
+                                 .model_id == 3 ~ "Prophet"))
+
+#Seperate the IDs into columns for AC, sales channel and product category and join with the product category names to obtain the formal names for the models excluding the external regressors
+acc_local_split_nr <- acc_local_min_mape_nr |> 
+  mutate(id_2 = id) |> 
+  separate(id_2, into = c("AC", "channel", "product_cat"), sep = "-") |> 
+  left_join(data_cat, by = c("product_cat" = "cat_prod")) |> 
+   mutate(.model_desc = case_when(.model_id == 4 ~ "Decision Tree",
+                                 .model_id == 5 ~ "Random Forest",
+                                 .model_id == 6 ~ "Prophet"))
+
+#Create a list of valid product categories
+cat_prod_list <-acc_local_split|> 
+  filter(!product_categories == "NA") |> 
+  distinct(product_categories) |> 
+  pull()
+
+
+#Create a function to create boxplots of the MAPE
+median_mape_prod_func <- function(cat_prod) {
+  
+  boxplot_mape <- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  filter(product_categories == cat_prod) |>
+    ggplot(aes(y = mape)) +
+  geom_boxplot() +
+  labs(subtitle = paste("MAPE ", cat_prod),
+       y = "MAPE",
+       x = paste(cat_prod)) +
+  coord_cartesian(ylim = c(0, 20))+
+    facet_wrap(~ .model_desc)+
+  theme_apa_cus
+}
+
+m <- list()
+
+#Loop over all porduct categories and apply the median_mape_prod_func that generates boxplots of the MAPE per product category
+for (p in seq_along(cat_prod_list)) {
+  m[[p]] <- median_mape_prod_func(cat_prod_list[p])
+}
+
+#for (i in seq_along(m)){
+#  print(m[[i]])
+#}
+
+#Combine the plots
+boxplots_global_model <- m[[1]]+ m[[2]]+ m[[3]]+ m[[4]]+ m[[5]]
+boxplots_global_model<-boxplots_global_model+
+plot_annotation(
+  title = "Annex D",
+  subtitle = "Distribution MAPE Global Model with regressors")&
+  theme_apa_cus+
+theme(axis.text.x = element_blank(),
+      axis.ticks = element_blank())
+
+#Save the plot 
+ggsave(filename = "boxplots_global_model.png", plot = boxplots_global_model, width = 8, height = 5, dpi = 150)
+
+#Repeat code above but gthis time for the models excluding regressors
+median_mape_prod_func_no_reg <- function(cat_prod) {
+  
+  boxplot_mape <- acc_local_split_nr |> 
+  filter(!product_categories == "NA") |> 
+  filter(product_categories == cat_prod) |>
+    ggplot(aes(y = mape)) +
+  geom_boxplot() +
+  labs(title = "",
+       y = "MAPE",
+       x = paste(cat_prod)) +
+  coord_cartesian(ylim = c(0, 20))+
+    facet_wrap(~ .model_desc)+
+  theme_apa_cus_no_x
+  
+}
+
+m_nr <- list()
+
+for (p in seq_along(cat_prod_list)) {
+  m_nr[[p]] <- median_mape_prod_func_no_reg(cat_prod_list[p])
+}
+
+for (i in seq_along(m)){
+  print(m[[i]])
+}
+
+
+for (i in seq_along(m_nr)){
+  print(m_nr[[i]])
+}
+
+
+#for (i in seq_along(m)) {
+#  file_name <- paste0("MAPE_", i, ".png")
+#  ggsave(filename = file_name, plot = m[[i]], width = 4, height = 4, dpi = 300)
+#  cat("Saved:", file_name, "\n")
+#}
+#
+#for (i in seq_along(m_nr)) {
+#  file_name <- paste0("MAPE_nr_", i, ".png")
+#  ggsave(filename = file_name, plot = m_nr[[i]], width = 4, height = 4, dpi = 300)
+#  cat("Saved:", file_name, "\n")
+#}
+
+```
+
+```{r}
+
+#Compute the median MAPE per product category
+median_mape<- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories,.model_desc ) |> 
+  mutate(median_mape = median(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(median_mape == min(median_mape)) |> 
+  select(product_categories, .model_desc, median_mape) |> 
+  distinct(product_categories, .keep_all = TRUE) |> 
+  arrange(median_mape) |> 
+  mutate(.model_desc = case_when(.model_desc == "RPART" ~ "Decision Tree",
+                                 .model_desc == "RANGER" ~ "Random Forest",
+                                 .model_desc == "PROPHET W/ REGRESSORS" ~ "Prophet")) |> 
+  rename("Product category" = product_categories, Model = .model_desc, Median = median_mape) 
+#Compute the mean MAPE per product category
+mean_mape<- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories, .model_desc ) |> 
+  mutate(mean_mape = mean(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(mean_mape == min(mean_mape)) |> 
+  select(product_categories, .model_desc, mean_mape) |> 
+  distinct(product_categories, .keep_all = TRUE) |> 
+  arrange(mean_mape) |>
+   mutate(.model_desc = case_when(.model_desc == "RPART" ~ "Decision Tree",
+                                 .model_desc == "RANGER" ~ "Random Forest",
+                                 .model_desc == "PROPHET W/ REGRESSORS" ~ "Prophet"))|> 
+  rename("Product category" = product_categories, Model = .model_desc, Mean = mean_mape)
+mean_mape
+
+#Repeat for models without external regressors
+median_mape_nr<- acc_local_split_nr |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories,.model_desc ) |> 
+  mutate(median_mape = median(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(median_mape == min(median_mape)) |> 
+  select(product_categories, .model_desc, median_mape) |> 
+  distinct(product_categories, .keep_all = TRUE) |> 
+  arrange(median_mape) |> 
+  mutate(.model_desc = case_when(.model_desc == "RPART" ~ "Decision Tree",
+                                 .model_desc == "RANGER" ~ "Random Forest",
+                                 .model_desc == "PROPHET W/ REGRESSORS" ~ "Prophet")) |> 
+   rename("Product category" = product_categories, "Model (no regressors)" = .model_desc, "Median witout (no regressors)" = median_mape)
+
+#Repeat for models without external regressors
+mean_mape_nr<- acc_local_split_nr |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories, .model_desc ) |> 
+  mutate(mean_mape = mean(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(mean_mape == min(mean_mape)) |> 
+  select(product_categories, .model_desc, mean_mape) |> 
+  distinct(product_categories, .keep_all = TRUE) |> 
+  arrange(mean_mape) |>
+   mutate(.model_desc = case_when(.model_desc == "RPART" ~ "Decision Tree",
+                                 .model_desc == "RANGER" ~ "Random Forest",
+                                 .model_desc == "PROPHET W/ REGRESSORS" ~ "Prophet"))|> 
+  rename("Product category" = product_categories, "Model (no regressors)" = .model_desc, "Mean (no regressors)" = mean_mape)
+
+#Combine the table containing mean MAPEs for the models including and excluding the external regressors
+total_mean_mape <- mean_mape |> 
+  left_join(mean_mape_nr, by = c("Product category"="Product category"))
+
+#Combine the table containing median MAPEs for the models including and excluding the external regressors
+total_median_mape <- median_mape |> 
+  left_join(median_mape_nr, by = c("Product category"="Product category"))
+  
+#Save as CSV to include in the final document
+#write.csv(total_mean_mape, "total_mean_mape.csv", row.names = FALSE)
+#write.csv(total_median_mape, "total_median_mape.csv", row.names = FALSE)
+
+```
+
+#### Refitting and Forecasting
+
+```{r}
+#| eval: false
+
+
+#Visualise Test Forecast for the time series with the lwoest MAPE
+f <-submodels_calibrated_tbl |> 
+  modeltime_forecast(
+    new_data = testing (splits),
+    actual_data = data_panel_prep,
+    keep_data = TRUE) |> 
+  filter(id == "11-1-Baby_food"|id == "7-1-dairy_eggs"|id == "10-1-preserved_premade"|id == "10-4-alc_drinks" ) |> 
+  group_by(id) |> 
+  plot_modeltime_forecast(.facet_ncol = 2, .facet_nrow = 1, .interactive = FALSE, .trelliscope = FALSE, .conf_interval_show = FALSE)+
+  theme_apa_cus
+
+
+#Format the plot to make Prophet stand out
+f<-f + scale_colour_manual(values = c("black","#CCCCCC", "#AAAAAA", "red","#666666","#A9A9A9", "#333333"), labels = c("Actual","Decision Tree" , "Random Forest", "Prophet", "Decision Tree (no reg)", "Random Forest (no reg)", "Prophet (no reg)"))+
+  labs(title = "Figure 9",
+    subtitle = "Predicted vs Acutual Values",
+       y = "Equivalent Units Sold",
+       x = "Date",
+    colour = "Model")
+
+
+#Save the plot
+ggsave(filename = "forecast_global_prophet.png", plot = f, width = 8, height = 5, dpi = 150)
+```
+
+```{r}
+#Refit on Full Training Dataset
+submodels_refit_tbl <- submodels_calibrated_tbl |> 
+  modeltime_refit(data_panel_prep)
+
+```
+
+```{r}
+
+set.seed(123)
+scipen = 999
+
+#Plot the forecast for the four best predicted time series one year into the future
+f <-submodels_refit_tbl |> 
+  modeltime_forecast(
+    new_data = future_data_panel,
+    actual_data = data_panel_prep,
+    keep_data = TRUE ) |> 
+  filter(id == "11-1-Baby_food"|id == "7-1-dairy_eggs"|id == "10-1-preserved_premade"|id == "10-4-alc_drinks" ) |> 
+  group_by(id) |> 
+  plot_modeltime_forecast(.facet_ncol = 2, .interactive = FALSE, .trelliscope = FALSE, .conf_interval_show = FALSE, .legend_max_width = 10) +
+theme_apa_cus
+
+#ggsave(filename = "forcast_year.png", plot = f, width = 8, height = 5, dpi = 300)
+
+
+```
+
+## Prophet
+
+In the following chunk subset of the time series is selected. This is done as the model is too computationally expensive to run all models. Then a function is created to train, cross-validate and predict the timeseries using the Prophet algorithm.
+
+```{r}
+options(scipen = 999)
+set.seed(123)
+
+#Only select 5 product categories.
+ data_panel_red <-data_panel |> 
+  mutate(id_2 = id) |> 
+  separate(id_2, into = c("AC", "channel", "product_cat"), sep = "-") |> 
+  filter(AC == 7|AC==16) |> 
+  filter(product_cat %in% c("non_alc_drinks", "alc_drinks", "vegetables_legumes", "meat_fish", "dairy_eggs" ))
+
+
+
+id_c_list <- data_panel_red |>
+  mutate(id = as.character(id)) |> 
+  distinct(id) |> 
+  pull()
+
+
+# Initialize parallel processing
+cl <- makeCluster(5) 
+registerDoParallel(cl)
+
+
+start_time <- Sys.time()
+
+
+# Create a function to train, cross-validate and predict using the Prophet algorithm
+prophet_func <- function(id_c, covid_periods){
+  
+  data_panel_red <-data_panel |> 
+  filter(id == id_c) |> 
+  rename(y = e_u, ds = date)
+
+# Define the parameter grid
+param_grid <- expand.grid(
+  changepoint_prior_scale = c(0.001, 0.1,  0.5), 
+  seasonality_prior_scale = c(0.01, 1,  5), 
+  holidays_prior_scale = c(0.01, 1,  5) 
+)
+
+set.seed(123)
+
+#Sample only 8 rows from the param grid to reduce computational expensiveness
+sampled_param_grid <- param_grid[sample(1:nrow(param_grid), size = 8), ]
+
+# Initialize lists to store results
+  results <- list()
+  
+# Loop through each parameter combination in parallel
+results <- foreach(params = iter(sampled_param_grid, by = 'row'), .combine = 'rbind', .packages = c('prophet', 'foreach', 'doParallel', 'iterators', 'dplyr') ) %dopar% {
+  
+  # Create and fit Prophet model with the given parameters
+  model <- prophet(
+    interval.width = 0.95,
+    changepoint.prior.scale = params$changepoint_prior_scale,
+    seasonality.prior.scale = params$seasonality_prior_scale,
+    holidays.prior.scale = params$holidays_prior_scale,
+    holidays = covid_periods,
+    growth = 'flat'
+  )
+
+#Add holidays and external regressors 
+  model <- add_country_holidays(model, country_name = 'ES')
+  model <- add_regressor(model, 'GDP_month')
+  model <- add_regressor(model, 'production_agg_month')
+  model <- add_regressor(model, 'food_cpi')
+  model <- add_regressor(model, 'non_alc_bev_cpi')
+  model <- add_regressor(model, 'alc_bev_cpi')
+
+  
+  # Fit the model
+  model <- fit.prophet(model, data_panel_red)
+  
+  # Perform cross-validation
+  df_cv <- cross_validation(model,  period = 104, horizon = 52, units = 'weeks')
+  
+ 
+ # Calculate performance metrics
+  df_metrics <- performance_metrics(df_cv)
+
+  
+ # Store results
+  data.frame(
+    changepoint_prior_scale = params$changepoint_prior_scale,
+    seasonality_prior_scale = params$seasonality_prior_scale,
+    holidays_prior_scale = params$holidays_prior_scale,
+    df_metrics
+  )
+  
+  
+}
+
+# Store the results outside of the inner loop
+results <- results
+# Identify the best hyperparameters based on mape
+best_params <- results |> 
+  arrange(horizon, mape) |> 
+  slice(1) |> 
+  select(changepoint_prior_scale, seasonality_prior_scale, holidays_prior_scale)
+
+
+# Create and fit the Prophet model with the best hyperparameters
+best_model <- prophet(
+  interval.width = 0.95,
+  changepoint.prior.scale = best_params$changepoint_prior_scale,
+  seasonality.prior.scale = best_params$seasonality_prior_scale,
+  holidays.prior.scale = best_params$holidays_prior_scale,
+  holidays = covid_periods,
+  growth = 'flat'
+)
+
+#Add holidays and external regressors 
+best_model <- add_country_holidays(best_model, country_name = 'ES')
+best_model <- add_regressor(best_model, 'GDP_month')
+best_model <- add_regressor(best_model, 'production_agg_month')
+best_model <- add_regressor(best_model, 'food_cpi')
+best_model <- add_regressor(best_model, 'non_alc_bev_cpi')
+best_model <- add_regressor(best_model, 'alc_bev_cpi')
+
+# Fit the model on the entire dataset
+best_model <- fit.prophet(best_model, data_panel_red)
+
+#Generate the coefficients of the external regressors
+feature_imp <- regressor_coefficients(best_model)
+
+#Cross-validation based on the best model
+df_cv <- cross_validation(best_model,  period = 104, horizon = 52, units = 'weeks')
+
+
+#Creating dataframe for predictions (future dates)
+future <- make_future_dataframe(best_model, periods = 12, freq = 'months')
+future <- future |> 
+  left_join(select(data_panel_red, ds, GDP_month, production_agg_month, food_cpi, non_alc_bev_cpi, alc_bev_cpi), by = 'ds')
+
+
+# Fill missing values 
+future <- future |> 
+  fill(GDP_month, production_agg_month, food_cpi, non_alc_bev_cpi, alc_bev_cpi, .direction = 'downup')
+
+
+# Dataframe with forecast values (yhat)
+forecast <- predict(best_model, future)
+
+coefficients <- best_model$extra_regressors
+
+#Collect all results to transport out of the list
+list(
+    cross_validation_plot = plot_cross_validation_metric(df_cv, metric = 'mape') + ggtitle(paste("Accuracy ", id_c)) + theme_apa_cus,
+    plot_comp = prophet_plot_components(best_model, forecast),
+    forecast_plot = plot(best_model, forecast) + add_changepoints_to_plot (best_model)+ ggtitle(paste("Forecast ", id_c))+ theme_apa_cus,
+    results = results,
+     df_cv =  df_cv,
+    feature_imp = feature_imp)
+
+  
+}
+
+#Create an empty list to store the results
+results_list <- list()
+
+ for (i in seq_along(id_c_list)) {
+  results_list[[i]] <- prophet_func(id_c = id_c_list[i], covid_periods = covid_periods)
+}
+id_c_list
+
+# Extract plots from results
+plot_comp <- lapply(results_list, '[[', 'plot_comp')
+forecast_plot <- lapply(results_list, '[[', 'forecast_plot')
+cross_validation_plot <- lapply(results_list, '[[', 'cross_validation_plot')
+results <- lapply(results_list, '[[', 'results')
+df_cv <- lapply(results_list, '[[', 'df_cv')
+feature_imp <- lapply(results_list, '[[', 'feature_imp')
+coefficients <- lapply(results_list, '[[', 'coefficients')
+
+#Stop the time
+end_time <- Sys.time()
+
+#Compute duration of the computation
+time_taken <- end_time - start_time
+time_taken
+
+# Stop the parallel cluster and start sequential
+stopCluster(cl)
+registerDoSEQ()
+
+cross_validation_plot[1]
+plot_comp[[1]]
+forecast_plot[[1]]
+df_cv[[1]]
+feature_imp[1]
+
+
+
+```
+
+```{r}
+
+# Load the plots from the forecast_plot list
+p1 <- forecast_plot[[31]]
+# Add labels to p1
+p1 <- p1 + labs(subtitle = "País Vasco, Tradicional, \n Non-alcoholic drinks ", title = NULL, x = "Date", y = "Equivalent Units Sold")
+
+p2 <- forecast_plot[[7]]
+# Add labels to p2
+p2 <- p2 + labs(subtitle = "País Vasco, Hipermercados,\n Non-alcoholic drinks ", title = NULL, x = "Date", y = "Equivalent Units Sold")
+
+p3 <- forecast_plot[[6]]
+# Add labels to p3
+p3 <- p3 + labs(subtitle = "Castilla y Leon, Hipermercados,\n Non-alcoholic drinks ", title = NULL, x = "Date", y = "Equivalent Units Sold")
+
+p4 <- forecast_plot[[27]]
+# Add labels to p4
+p4 <- p4 + labs(subtitle = "Castilla y Leon, Tradicional,\n Non-alcoholic drinks ", title = NULL, x = "Date", y = "Equivalent Units Sold")
+
+# Combine the individual plots into a single plot using patchwork
+example_prophet <- p1 + p2 + p3 + p4
+
+# Add an overall title and subtitle to the combined plot
+example_prophet <- example_prophet +
+  plot_annotation(
+    title = "Figure 10",
+    subtitle = "Forecast plots: Non-Alcoholic Drinks"
+  ) & theme_apa_cus # Apply a custom APA theme (assuming theme_apa_cus is predefined)
+
+# Save the combined plot as a PNG file
+ggsave(filename = "example_prophet.png", plot = example_prophet, width = 8, height = 5, dpi = 150)
+
+
+```
+
+#### Accuracy
+
+As for the global model, this code chunk produces boxplots of the MAPE per product category.
+
+```{r}
+
+# Initialize an empty list to store results
+r <- list()
+
+# Loop through the 'results' list
+for (i in seq_along(results)) {
+  # For each element in 'results', filter and mutate the data
+  r[[i]] <- results[[i]] |> 
+    filter(horizon == 364) |>            # Filter rows where horizon equals 364
+    filter(mape == min(mape)) |>         # Filter rows with the minimum MAPE value
+    mutate(id = id_c_list[i]) |>         # Add an 'id' column with corresponding id from 'id_c_list'
+    select(last_col(), everything())     # Select columns with the 'id' column as the first column
+}
+
+# Combine all elements in list 'r' which contains the accuracy results into a single dataframe
+result_df <- do.call(rbind, r)
+result_df
+
+# Split the 'id' column into separate columns and join with 'data_cat' dataframe to obtain the formal product category names
+acc_local_split <- result_df |> 
+  mutate(id_2 = id) |> 
+  separate(id_2, into = c("AC", "channel", "product_cat"), sep = "-") |> 
+  left_join(data_cat, by = c("product_cat" = "cat_prod")) 
+
+# Create a list of unique product categories excluding NAs
+cat_prod_list <- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  distinct(product_categories) |> 
+  pull()
+
+# Function to create a boxplot of MAPE for each product category
+median_mape_prod_func <- function(cat_prod) {
+  p <- acc_local_split |> 
+    filter(!product_categories == "NA") |> 
+    filter(product_categories == cat_prod) |>
+    ggplot(aes(y = mape)) +
+    geom_boxplot() +
+    labs(subtitle = paste("MAPE ", cat_prod),
+         y = "MAPE",
+         x = paste(cat_prod)) +
+    theme_apa_cus # Assuming 'theme_apa_cus' is a predefined custom theme
+  
+  return(p)
+}
+
+# Initialize an empty list to store plots
+m <- list()
+
+# Loop through the list of product categories and generate boxplots
+for (p in seq_along(cat_prod_list)) {
+  m[[p]] <- median_mape_prod_func(cat_prod_list[p])
+}
+
+# Print each plot in the list
+for (i in seq_along(m)) {
+  print(m[[i]])
+}
+
+# Combine the boxplots (use patchwork)
+boxplots_prophet <- m[[1]] + m[[2]] + m[[3]] + m[[4]] + m[[5]]
+
+# Add title and subtitle to the combined plot
+boxplots_prophet <- boxplots_prophet + 
+  plot_annotation(
+    title = "Annex E",
+    subtitle = "Distribution of MAPE per Product Category") & 
+  theme_apa_cus # Apply the custom APA theme
+
+# Save the combined plot as a PNG file
+ggsave(filename = "boxplots_prophet.png", plot = boxplots_prophet, width = 8, height = 5, dpi = 150)
+
+
+
+```
+
+```{r}
+
+#Generate the median mape per product category
+median_mape_prophet<- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories) |> 
+  mutate(median_mape = median(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(median_mape == min(median_mape)) |> 
+  select(product_categories, median_mape) |> 
+  distinct(product_categories, .keep_all = TRUE)
+
+
+#Generate the mean mape per product category
+mean_mape_prophet<- acc_local_split |> 
+  filter(!product_categories == "NA") |> 
+  group_by(product_categories) |> 
+  mutate(mean_mape = mean(mape)) |> 
+  ungroup() |> 
+  group_by(product_categories) |> 
+  filter(mean_mape == min(mean_mape)) |> 
+  select(product_categories, mean_mape) |> 
+  distinct(product_categories, .keep_all = TRUE)
+
+#Combine the mean and median tables 
+mean_median_mape_prophet <- median_mape_prophet |> 
+  left_join(mean_mape_prophet, by = ("product_categories")) |> 
+  rename("Product category" = product_categories, "Median MAPE" = median_mape, "Mean MAPE" = mean_mape)
+
+#write.csv(mean_median_mape_prophet, "mean_median_mape_prophet.csv", row.names = FALSE)
+
+```
+
+#### Feature Importance
+
+The following section computes boxplots of the coefficients of the external regressors to indicate the feature importance of each external regressor.
+
+```{r}
+feature_imp_df <- do.call(rbind, feature_imp)
+
+feature_imp_df<-feature_imp_df |>
+  rowid_to_column() %>% 
+  select(regressor, coef, rowid) |> 
+  pivot_wider(id_cols = rowid, names_from = regressor, values_from = coef) |> 
+  select(-rowid)
+
+
+feature_func <- function(regressor){
+  feature_imp_df |> 
+    select(regressor) |> 
+    na.omit() 
+  
+}
+
+regressors <- c("GDP_month", "production_agg_month", "food_cpi", "non_alc_bev_cpi", "alc_bev_cpi")
+
+f <- list()
+
+for (i in seq_along(regressors)) {
+  f[[i]] <- feature_func(regressors[i])
+}
+
+feature_imp_coef <- do.call(cbind, f)
+
+names<- c("GDP (per month)", "Production aggregation (per month)", "CPI Food", "CPI non-alcoholic beverages", "Alcoholic beverages")
+
+coef <- c("Coefficient", "", "", "Coefficient", "")
+
+f_graph <- function(regressor, name, coef){
+  
+ feature_imp_coef |> 
+  select(regressors) |> 
+  ggplot(aes(y = !!sym(regressor)))+
+  geom_boxplot()+
+  theme_apa_cus+
+  labs(x = name, y = coef) + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) 
+  
+}
+
+fg <- list()
+
+for (i in seq_along(regressors)) {
+  fg[[i]] <- f_graph(regressors[i], names[i], coef[i])
+}
+
+
+feature_imp_prophet_plot <- fg[[1]]+fg[[2]]+fg[[3]]+fg[[4]]+fg[[5]]
+
+feature_imp_prophet_plot<- feature_imp_prophet_plot+
+  plot_annotation(
+  title = "Figure 10",
+  subtitle = "Distribution of the Coefficients of the External Regressors")&
+  theme_apa_cus
+
+
+ggsave(filename = "feature_imp_prophet_plot.png", plot = feature_imp_prophet_plot, width = 8, height = 5, dpi = 150)
+
+```
